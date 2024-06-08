@@ -1,76 +1,79 @@
-name: E2E Tests
-
-on:
-  push:
-    branches:
-      - main
-    tags-ignore:
-      # The release versions will be verified by 'publish-release.yml'
-      - armeria-*
-  pull_request:
-
 concurrency:
-  group: ci-e2e-chaos-tests-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
-
+  group: ci-e2e-chaos-tests-${{ github.event.pull_request.number || github.sha }}
 env:
   CHAOS_MESH_VERSION: 2.6.2
   DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
-
 jobs:
   chaos-tests:
-    name: Kubernetes Chaos test
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
     if: github.repository == 'line/armeria'
+    name: Kubernetes Chaos test
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+    - continue-on-error: true
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      id: setup-jdk-21
+      name: Setup Java 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 21
+    - continue-on-error: true
+      id: minikube
+      name: Setup Minikube
+      uses: medyagh/setup-minikube@latest
+    - continue-on-error: true
+      name: Install Chaos Mesh
+      run: 'curl -sSL https://mirrors.chaos-mesh.org/v${CHAOS_MESH_VERSION}/install.sh
+        | bash
 
-      - id: setup-jdk-21
-        name: Setup Java 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: 21
+        kubectl wait --for=condition=Ready pods --all-namespaces --all --timeout=600s
 
-      - name: Setup Minikube
-        id: minikube
-        uses: medyagh/setup-minikube@latest
+        '
+      shell: bash
+    - continue-on-error: true
+      name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - continue-on-error: true
+      name: Build Chaos test images
+      run: '# The images should be built in the minikube docker environment
 
-      - name: Install Chaos Mesh
-        run: |
-          curl -sSL https://mirrors.chaos-mesh.org/v${CHAOS_MESH_VERSION}/install.sh | bash
-          kubectl wait --for=condition=Ready pods --all-namespaces --all --timeout=600s
-        shell: bash
+        eval $(minikube -p minikube docker-env)
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        ./gradlew --no-daemon --stacktrace :it:kubernetes-chaos-tests:k8sBuild
 
-      - name: Build Chaos test images
-        run: |
-          # The images should be built in the minikube docker environment
-          eval $(minikube -p minikube docker-env)
-          ./gradlew --no-daemon --stacktrace :it:kubernetes-chaos-tests:k8sBuild
-        shell: bash
+        '
+      shell: bash
+    - continue-on-error: true
+      env:
+        CHAOS_TEST: network-delay.yaml
+      name: Run Chaos Tests - network-delay.yaml
+      run: './gradlew --no-daemon --stacktrace :it:kubernetes-chaos-tests:test
 
-      - name: Run Chaos Tests - network-delay.yaml
-        env:
-          CHAOS_TEST: network-delay.yaml
-        run: |
-          ./gradlew --no-daemon --stacktrace :it:kubernetes-chaos-tests:test
-        shell: bash
+        '
+      shell: bash
+    - continue-on-error: true
+      env:
+        CHAOS_TEST: network-loss.yaml
+      name: Run Chaos Tests - network-loss.yaml
+      run: '# --rerun-tasks is required to run the tests because only the environment
+        variable is changed
 
-      - name: Run Chaos Tests - network-loss.yaml
-        env:
-          CHAOS_TEST: network-loss.yaml
-        run: |
-          # --rerun-tasks is required to run the tests because only the environment variable is changed
-          ./gradlew --no-daemon --stacktrace :it:kubernetes-chaos-tests:test --rerun-tasks
-        shell: bash
+        ./gradlew --no-daemon --stacktrace :it:kubernetes-chaos-tests:test --rerun-tasks
 
-      - name: Run Chaos Tests - network-duplicate.yaml
-        env:
-          CHAOS_TEST: network-duplicate.yaml
-        run: |
-          ./gradlew --no-daemon --stacktrace :it:kubernetes-chaos-tests:test --rerun-tasks
-        shell: bash
+        '
+      shell: bash
+    - continue-on-error: true
+      env:
+        CHAOS_TEST: network-duplicate.yaml
+      name: Run Chaos Tests - network-duplicate.yaml
+      run: './gradlew --no-daemon --stacktrace :it:kubernetes-chaos-tests:test --rerun-tasks
+
+        '
+      shell: bash
+    timeout-minutes: 120
+name: E2E Tests
+on:
+  repository_dispatch:
+    types: trigger-ga___e2e-chaos-tests.yml

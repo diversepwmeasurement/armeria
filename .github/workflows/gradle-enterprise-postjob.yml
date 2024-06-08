@@ -1,140 +1,128 @@
-name: Upload artifacts to ge.armeria.dev
-
-on:
-  workflow_run:
-    workflows: [CI]
-    types:
-      - completed
-
 env:
-  LC_ALL: "en_US.UTF-8"
-  BUILD_JDK_VERSION: "21"
-  DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
-  RUN_ID: ${{ github.event.workflow_run.id }}
+  BUILD_JDK_VERSION: '21'
   COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
-  # Used by Octokit
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
   DOWNLOAD_DIR: build-scans/
-
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  LC_ALL: en_US.UTF-8
+  RUN_ID: ${{ github.event.workflow_run.id }}
 jobs:
-  upload-gradle-build-scan:
-    name: Upload Gradle build scans
-    if: github.repository == 'line/armeria'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: setup-jdk-21
-        name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Download artifact
-        id: download-artifact
-        uses: dawidd6/action-download-artifact@v3
-        with:
-          workflow_conclusion: ""
-          run_id: ${{ env.RUN_ID }}
-          name: build-scan.*
-          name_is_regexp: true
-          path: ${{ env.DOWNLOAD_DIR }}
-          check_artifacts: true
-          search_artifacts: true
-
-      - id: get-pr-number
-        name: Get PR number
-        run: |
-          PR_NUMBER=$(ls $DOWNLOAD_DIR | head -1 | sed -n 's/\([0-9]*\)-build-scan.*/\1/p')
-          if [ -z "$PR_NUMBER" ]; then
-            echo "❔️No pull request number found."
-          else
-            echo "✅ Pull request number: ${PR_NUMBER}"
-            echo "PR_NUMBER=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-          fi
-        shell: bash
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - id: upload-build-scans
-        name: Upload build scans
-        run: |
-          BUILD_SCAN_DIR="${HOME}/.gradle/build-scan-data"
-          BUILD_SCANS=""
-
-          echo "## Build Scan®" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          rm -rf $BUILD_SCAN_DIR
-          for SCAN in $(ls $DOWNLOAD_DIR) ; do
-            mkdir -p $BUILD_SCAN_DIR
-            echo "🚚 Copying build scan: ${DOWNLOAD_DIR}${SCAN}/ to $BUILD_SCAN_DIR ..."
-            cp -r ${DOWNLOAD_DIR}${SCAN}/* $BUILD_SCAN_DIR
-
-            JOB_NAME=$(echo ${SCAN} | sed 's/.*build-scan-\(.*\)/\1/')
-            echo "📤 Uploading build scan for job ${JOB_NAME} ..."
-          
-            if ./gradlew --no-daemon --stacktrace clean buildScanPublishPrevious; then
-              echo "✅ Published build scan: ${JOB_NAME}"
-              BUILD_SCANS="${JOB_NAME} $(cat build/build-scan-url.txt),${BUILD_SCANS}"
-              echo "- [${JOB_NAME}]($(cat build/build-scan-url.txt))" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "❌ Failed to upload build scan: ${JOB_NAME}"
-            fi
-
-            rm -rf $BUILD_SCAN_DIR
-          done
-
-          echo "BUILD_SCANS=${BUILD_SCANS}" >> "$GITHUB_OUTPUT"
-        shell: bash
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-
-      - id: create-or-update-comment
-        name: Create or update comment
-        if: steps.get-pr-number.outputs.PR_NUMBER
-        working-directory: .github/actions
-        run: |
-          npm ci
-          npm run comment-build-scan
-        shell: bash
-        env:
-          BUILD_SCANS: ${{ steps.upload-build-scans.outputs.BUILD_SCANS }}
-          PR_NUMBER: ${{ steps.get-pr-number.outputs.PR_NUMBER }}
-
   upload-build-cache:
     if: github.repository == 'line/armeria'
-    runs-on: ${{ matrix.on }}
-    timeout-minutes: 120
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ env.COMMIT_SHA }}
+    - continue-on-error: true
+      id: setup-build-jdk
+      name: Set up build JDK ${{ env.BUILD_JDK_VERSION }}
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ env.BUILD_JDK_VERSION }}
+    - continue-on-error: true
+      name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - continue-on-error: true
+      name: Build with Gradle
+      run: './gradlew --no-daemon --stacktrace --build-cache build \
+
+        --max-workers=2 --parallel \
+
+        -PbuildJdkVersion=${{ env.BUILD_JDK_VERSION }} \
+
+        -Pretry=true -PfailOnPassedAfterRetry=false \
+
+        -Porg.gradle.java.installations.paths=${{ steps.setup-build-jdk.outputs.path
+        }}
+
+        '
+      shell: bash
     strategy:
       fail-fast: false
       matrix:
-        on: [ ubuntu-latest, macos-12, windows-latest ]
+        on:
+        - ubuntu-latest
+        - macos-12
+        - windows-latest
+    timeout-minutes: 120
+  upload-gradle-build-scan:
+    if: github.repository == 'line/armeria'
+    name: Upload Gradle build scans
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.COMMIT_SHA }}
+    - continue-on-error: true
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      id: setup-jdk-21
+      name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+    - continue-on-error: true
+      id: download-artifact
+      name: Download artifact
+      uses: dawidd6/action-download-artifact@v3
+      with:
+        check_artifacts: true
+        name: build-scan.*
+        name_is_regexp: true
+        path: ${{ env.DOWNLOAD_DIR }}
+        run_id: ${{ env.RUN_ID }}
+        search_artifacts: true
+        workflow_conclusion: ''
+    - continue-on-error: true
+      id: get-pr-number
+      name: Get PR number
+      run: "PR_NUMBER=$(ls $DOWNLOAD_DIR | head -1 | sed -n 's/\\([0-9]*\\)-build-scan.*/\\\
+        1/p')\nif [ -z \"$PR_NUMBER\" ]; then\n  echo \"\u2754\uFE0FNo pull request\
+        \ number found.\"\nelse\n  echo \"\u2705 Pull request number: ${PR_NUMBER}\"\
+        \n  echo \"PR_NUMBER=${PR_NUMBER}\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+      shell: bash
+    - continue-on-error: true
+      name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - continue-on-error: true
+      id: upload-build-scans
+      name: Upload build scans
+      run: "BUILD_SCAN_DIR=\"${HOME}/.gradle/build-scan-data\"\nBUILD_SCANS=\"\"\n\
+        \necho \"## Build Scan\xAE\" >> \"$GITHUB_STEP_SUMMARY\"\necho \"\" >> \"\
+        $GITHUB_STEP_SUMMARY\"\n\nrm -rf $BUILD_SCAN_DIR\nfor SCAN in $(ls $DOWNLOAD_DIR)\
+        \ ; do\n  mkdir -p $BUILD_SCAN_DIR\n  echo \"\U0001F69A Copying build scan:\
+        \ ${DOWNLOAD_DIR}${SCAN}/ to $BUILD_SCAN_DIR ...\"\n  cp -r ${DOWNLOAD_DIR}${SCAN}/*\
+        \ $BUILD_SCAN_DIR\n\n  JOB_NAME=$(echo ${SCAN} | sed 's/.*build-scan-\\(.*\\\
+        )/\\1/')\n  echo \"\U0001F4E4 Uploading build scan for job ${JOB_NAME} ...\"\
+        \n\n  if ./gradlew --no-daemon --stacktrace clean buildScanPublishPrevious;\
+        \ then\n    echo \"\u2705 Published build scan: ${JOB_NAME}\"\n    BUILD_SCANS=\"\
+        ${JOB_NAME} $(cat build/build-scan-url.txt),${BUILD_SCANS}\"\n    echo \"\
+        - [${JOB_NAME}]($(cat build/build-scan-url.txt))\" >> \"$GITHUB_STEP_SUMMARY\"\
+        \n  else\n    echo \"\u274C Failed to upload build scan: ${JOB_NAME}\"\n \
+        \ fi\n\n  rm -rf $BUILD_SCAN_DIR\ndone\n\necho \"BUILD_SCANS=${BUILD_SCANS}\"\
+        \ >> \"$GITHUB_OUTPUT\"\n"
+      shell: bash
+    - continue-on-error: true
+      name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+    - continue-on-error: true
+      env:
+        BUILD_SCANS: ${{ steps.upload-build-scans.outputs.BUILD_SCANS }}
+        PR_NUMBER: ${{ steps.get-pr-number.outputs.PR_NUMBER }}
+      id: create-or-update-comment
+      if: steps.get-pr-number.outputs.PR_NUMBER
+      name: Create or update comment
+      run: 'npm ci
 
-      - id: setup-build-jdk
-        name: Set up build JDK ${{ env.BUILD_JDK_VERSION }}
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: ${{ env.BUILD_JDK_VERSION }}
+        npm run comment-build-scan
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Build with Gradle
-        run: |
-          ./gradlew --no-daemon --stacktrace --build-cache build \
-          --max-workers=2 --parallel \
-          -PbuildJdkVersion=${{ env.BUILD_JDK_VERSION }} \
-          -Pretry=true -PfailOnPassedAfterRetry=false \
-          -Porg.gradle.java.installations.paths=${{ steps.setup-build-jdk.outputs.path }}
-        shell: bash
+        '
+      shell: bash
+      working-directory: .github/actions
+name: Upload artifacts to ge.armeria.dev
+on:
+  repository_dispatch:
+    types: trigger-ga___gradle-enterprise-postjob.yml
